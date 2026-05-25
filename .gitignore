@@ -1,0 +1,46 @@
+# Models & engines (large, hardware-specific)
+*.engine
+*.pt
+*.onnx
+*.pth
+models/
+engines/
+
+# Data
+/data/
+datasets/
+videos/
+*.mp4
+*.h264
+
+# Evidence & runtime output
+evidence/
+events/
+*.db
+*.sqlite
+logs/
+*.log
+
+# Benchmark raw output (keep summaries, ignore raw CSVs)
+benchmarks/**/*.csv
+benchmarks/**/raw/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Build
+build/
+*.so
+*.o
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp

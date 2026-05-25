@@ -1,0 +1,7 @@
+# Host-side development + CI (laptop, not Jetson)
+ruff==0.6.9
+pytest==8.3.3
+numpy==1.26.4
+scipy==1.13.1
+motmetrics==1.4.0
+opencv-python-headless==4.10.0.84

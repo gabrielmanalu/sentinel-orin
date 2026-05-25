@@ -1,0 +1,83 @@
+# Sentinel Orin — multi-camera edge AI analytics appliance
+# Target: Jetson Orin Nano Super 8GB, JetPack 6.2.x, DeepStream 7.1
+#
+# Start: docker compose up --build
+# Access: API :8080 | Grafana :3000 | Prometheus :9090
+
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/pipeline.Dockerfile
+    runtime: nvidia
+    network_mode: host
+    volumes:
+      - /data/sentinel:/data/sentinel
+    environment:
+      - DISPLAY=${DISPLAY:-}
+    restart: unless-stopped
+    # Exposes Prometheus metrics on :9100 (host network)
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - /data/sentinel:/data/sentinel:ro
+    restart: unless-stopped
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./docker/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
+
+  ros2-bridge:
+    build:
+      context: .
+      dockerfile: docker/ros2_bridge.Dockerfile
+    network_mode: host
+    depends_on:
+      - mqtt
+    restart: unless-stopped
+
+  rviz-subscriber:
+    build:
+      context: .
+      dockerfile: docker/rviz_subscriber.Dockerfile
+    network_mode: host
+    depends_on:
+      - ros2-bridge
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    ports:
+      - "9101:9100"
+    restart: unless-stopped
