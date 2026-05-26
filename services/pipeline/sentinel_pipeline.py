@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Sentinel Orin — DeepStream detection pipeline.
+"""Sentinel Orin — DeepStream detection + tracking pipeline.
 
 Pipeline:
     uridecodebin -> nvstreammux -> nvinfer (YOLO26n PGIE FP16)
-    -> fakesink
+    -> nvtracker (NvDCF) -> fakesink
 
-    Pad probe on nvinfer src pad logs detections per frame to stdout.
+    Pad probe on nvtracker src pad logs per-camera track IDs to stdout.
 
 Usage:
-    # Single stream smoke test:
+    # Single stream:
     python3 pipeline/sentinel_pipeline.py \
         --videos /data/sentinel/videos/wildtrack_v1/cam01_1080p60.mp4
 
@@ -49,6 +49,7 @@ except ImportError:
 DS_ROOT = Path("/opt/sentinel/deepstream")
 PGIE_CONFIG = DS_ROOT / "configs" / "yolo26n_pgie.txt"
 PARSER_LIB = DS_ROOT / "custom_parser" / "libnvdsinfer_custom_yolo26.so"
+TRACKER_CONFIG = DS_ROOT / "configs" / "tracker_nvdcf_perf.yml"
 
 # ---------------------------------------------------------------------------
 # State
@@ -59,9 +60,9 @@ _t_start = 0.0
 
 
 # ---------------------------------------------------------------------------
-# Detection pad probe
+# Tracking pad probe
 # ---------------------------------------------------------------------------
-def _on_nvinfer_src(pad, info, _user_data):
+def _on_tracker_src(pad, info, _user_data):
     global _frame_count, _detect_count
 
     buf = info.get_buffer()
@@ -84,12 +85,13 @@ def _on_nvinfer_src(pad, info, _user_data):
             n_obj += 1
             _detect_count += 1
 
-            # Log one detection per frame every 60 frames
+            # Log one tracked object per frame every 60 frames
             if _frame_count % 60 == 0 and n_obj == 1:
                 r = obj.rect_params
                 print(
                     f"[frame {_frame_count:>6}] "
                     f"cam={frame_meta.pad_index} "
+                    f"track_id={obj.object_id} "
                     f"conf={obj.confidence:.2f} "
                     f"box=({r.left:.0f},{r.top:.0f},{r.width:.0f},{r.height:.0f})"
                 )
@@ -135,17 +137,13 @@ def build_pipeline(video_paths: list[str]) -> tuple[Gst.Pipeline, GLib.MainLoop]
     for p in video_paths:
         print(f"  {p}")
 
-    if not PGIE_CONFIG.exists():
-        sys.exit(f"PGIE config not found: {PGIE_CONFIG}")
-    if not PARSER_LIB.exists():
-        sys.exit(
-            f"Custom parser not found: {PARSER_LIB}\n"
-            "  Build it first: cd deepstream/custom_parser && make"
-        )
+    for path in [PGIE_CONFIG, PARSER_LIB, TRACKER_CONFIG]:
+        if not path.exists():
+            sys.exit(f"Required file not found: {path}")
 
     pipeline = Gst.Pipeline.new("sentinel-pipeline")
 
-    # streammux — 16ms timeout matches one frame at 60 FPS source
+    # streammux
     streammux = _make_element("nvstreammux", "streammux")
     streammux.set_property("width", 1920)
     streammux.set_property("height", 1080)
@@ -177,20 +175,31 @@ def build_pipeline(video_paths: list[str]) -> tuple[Gst.Pipeline, GLib.MainLoop]
     pgie.set_property("config-file-path", str(PGIE_CONFIG))
     pipeline.add(pgie)
 
+    # nvtracker NvDCF
+    tracker = _make_element("nvtracker", "tracker")
+    tracker.set_property("ll-lib-file", "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so")
+    tracker.set_property("ll-config-file", str(TRACKER_CONFIG))
+    tracker.set_property("tracker-width", 640)
+    tracker.set_property("tracker-height", 384)
+    tracker.set_property("gpu-id", 0)
+    tracker.set_property("display-tracking-id", 1)
+    pipeline.add(tracker)
+
     # fakesink
     sink = _make_element("fakesink", "sink")
     sink.set_property("sync", 0)
     pipeline.add(sink)
 
-    # link
+    # link: streammux -> pgie -> tracker -> sink
     streammux.link(pgie)
-    pgie.link(sink)
+    pgie.link(tracker)
+    tracker.link(sink)
 
-    # pad probe
-    pgie_src = pgie.get_static_pad("src")
-    if not pgie_src:
-        sys.exit("Could not get pgie src pad")
-    pgie_src.add_probe(Gst.PadProbeType.BUFFER, _on_nvinfer_src, None)
+    # pad probe on tracker src (not pgie src — we want post-tracking metadata)
+    tracker_src = tracker.get_static_pad("src")
+    if not tracker_src:
+        sys.exit("Could not get tracker src pad")
+    tracker_src.add_probe(Gst.PadProbeType.BUFFER, _on_tracker_src, None)
 
     # bus
     loop = GLib.MainLoop()
@@ -220,7 +229,7 @@ def build_pipeline(video_paths: list[str]) -> tuple[Gst.Pipeline, GLib.MainLoop]
 # Main
 # ---------------------------------------------------------------------------
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Sentinel Orin detection pipeline")
+    ap = argparse.ArgumentParser(description="Sentinel Orin detection + tracking pipeline")
     ap.add_argument(
         "--videos",
         nargs="+",
@@ -242,7 +251,6 @@ def main() -> None:
     _t_start = time.time()
 
     print("\n[pipeline] Starting...")
-    print("[pipeline] First run builds TensorRT engine (~5-9 min). Subsequent runs use cache.")
     pipeline.set_state(Gst.State.PLAYING)
 
     try:

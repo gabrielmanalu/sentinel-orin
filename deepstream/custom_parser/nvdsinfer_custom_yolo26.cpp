@@ -20,7 +20,7 @@
  * Model: COCO-pretrained YOLO26n, filtered to PERSON CLASS (class_id == 0).
  *
  * Precision: FP16 primary engine (network-mode=2 in nvinfer config).
- * For INT8 benchmarking (Week 9), a separate raw-head parser will be written
+ * For INT8 benchmarking, a separate raw-head parser will be written
  * for the [1, 84, 8400] format, since end-to-end export is broken on
  * JetPack 6.2.x for INT8 (TensorRT 10.x Jetson limitation).
  *
