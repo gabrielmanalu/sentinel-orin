@@ -1,0 +1,40 @@
+# YOLO26n primary detector (PGIE)
+# FP16, batch-size=3, person class only, end-to-end NMS-free format [1, 300, 6]
+#
+# cluster-mode=4: no clustering — detections are already final from in-graph TopK.
+# NMS is not needed because YOLO26n's one-to-one head is NMS-free by architecture.
+#
+# First run builds the TensorRT FP16 engine from ONNX (~5-9 min on Orin Nano).
+# Engine is cached at model-engine-file for all subsequent runs.
+
+[property]
+gpu-id=0
+net-scale-factor=0.0039215697906911373
+model-color-format=0
+
+onnx-file=/data/sentinel/models/yolo26n/yolo26n.onnx
+model-engine-file=/data/sentinel/engines/yolo26n_fp16_b3_640.engine
+labelfile-path=/opt/sentinel/deepstream/labels/coco_person_only.txt
+
+# FP16
+network-mode=2
+batch-size=3
+infer-dims=3;640;640
+maintain-aspect-ratio=1
+symmetric-padding=1
+
+# Detector, person only
+network-type=0
+num-detected-classes=1
+gie-unique-id=1
+interval=0
+
+# Custom parser for [1, 300, 6] end-to-end output
+parse-bbox-func-name=NvDsInferParseCustomYolo26
+custom-lib-path=/opt/sentinel/deepstream/custom_parser/libnvdsinfer_custom_yolo26.so
+
+# No clustering — TopK inside the graph already produced final detections
+cluster-mode=4
+
+[class-attrs-all]
+pre-cluster-threshold=0.30
