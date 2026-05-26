@@ -25,6 +25,9 @@ logs/
 benchmarks/**/*.csv
 benchmarks/**/raw/
 
+# Compiled custom parsers
+deepstream/custom_parser/*.so
+
 # Python
 __pycache__/
 *.py[cod]
