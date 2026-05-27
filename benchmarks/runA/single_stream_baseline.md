@@ -66,6 +66,25 @@ Confidence threshold and probationAge tuning deferred to re-ID evaluation.
 
 ---
 
+## 3 streams — cam01 + cam03 + cam05, 1080p60, detection + NvDCF + OSNet SGIE
+
+| Metric | Value |
+|---|---|
+| Streams | cam01, cam03, cam05 |
+| Aggregate FPS (stable) | 217.7 |
+| FPS cost vs tracker-only | -16.6 FPS (~7% overhead) |
+| Total frames | 72,599 |
+| Total detections | 337979 |
+| Elapsed | 333.5s |
+| SGIE model | OSNet x0.25, FP16, batch=16 |
+| SGIE engine | osnet_x0_25_fp16_b16_256x128 |
+
+OSNet SGIE runs on every person crop across all 3 cameras, batching up to
+16 crops per inference call. At ~4.5 detections/frame × 3 cameras = ~13.5
+crops/frame, the batch=16 engine is near-fully utilized.
+
+---
+
 ## Observations
 
 **Batch efficiency:** Adding 2 streams to a batch=3 engine costs only ~50 FPS
@@ -89,7 +108,7 @@ headroom is 5.2× above that target.
 | Detection only (1 stream) | 184.3 |
 | Detection only (3 streams) | 234.1 |
 | + NvDCF tracker (3 streams) | 234.3 |
-| + OSNet SGIE (3 streams) | TBD |
+| + OSNet SGIE (3 streams) | 217.7 |
 | + Cross-camera re-ID | TBD |
 | + Zone analytics + events | TBD |
 | Full pipeline | TBD |

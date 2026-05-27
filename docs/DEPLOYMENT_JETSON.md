@@ -230,6 +230,38 @@ docker run --rm --runtime=nvidia --gpus all \
 
 ---
 
+## 10. Build the sentinel-pipeline Docker image
+
+The pipeline image bakes in GStreamer Python bindings and pyds so no manual
+installs are needed per container session.
+
+Prerequisites: custom parser `.so` must be compiled first (Step 6).
+
+```bash
+cd ~/sentinel-orin
+docker build -f docker/pipeline.Dockerfile -t sentinel-pipeline .
+```
+
+Build takes ~40 seconds (packages are downloaded and cached in the image).
+
+### Running the pipeline
+
+```bash
+# Headless (benchmark mode)
+docker run -it --rm   --runtime=nvidia   -v $(pwd):/opt/sentinel   -v /data/sentinel:/data/sentinel   sentinel-pipeline   python3 services/pipeline/sentinel_pipeline.py   --videos /data/sentinel/videos/wildtrack_v1/cam01_1080p60.mp4            /data/sentinel/videos/wildtrack_v1/cam03_1080p60.mp4            /data/sentinel/videos/wildtrack_v1/cam05_1080p60.mp4
+
+# Display mode
+docker run -it --rm   --runtime=nvidia   -e DISPLAY=$DISPLAY   -v /tmp/.X11-unix:/tmp/.X11-unix   -v $(pwd):/opt/sentinel   -v /data/sentinel:/data/sentinel   sentinel-pipeline   python3 services/pipeline/sentinel_pipeline.py --display   --videos /data/sentinel/videos/wildtrack_v1/cam01_1080p60.mp4            /data/sentinel/videos/wildtrack_v1/cam03_1080p60.mp4            /data/sentinel/videos/wildtrack_v1/cam05_1080p60.mp4
+```
+
+Note: `-v $(pwd):/opt/sentinel` mounts the repo so code changes are picked
+up without rebuilding the image. Remove the mount to use the image's baked-in
+files instead.
+
+Note for display mode: run `xhost +local:root` on the host first.
+
+---
+
 ## Known issues and workarounds
 
 | Issue | Cause | Fix |

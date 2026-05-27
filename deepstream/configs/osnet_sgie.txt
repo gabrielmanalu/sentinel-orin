@@ -1,0 +1,40 @@
+# OSNet x0.25 secondary detector (SGIE) — person re-identification embeddings
+#
+# Runs on object crops produced by YOLO26n PGIE (gie-unique-id=1).
+# Outputs raw 512-dim appearance embeddings via output-tensor-meta=1.
+# Embeddings are extracted in the pad probe for cross-camera re-ID.
+#
+# First run builds TensorRT FP16 engine from ONNX (~2-3 min on Orin Nano).
+# Engine is cached at model-engine-file afterward.
+
+[property]
+gpu-id=0
+
+onnx-file=/data/sentinel/models/osnet/osnet_x0_25.onnx
+model-engine-file=/data/sentinel/models/osnet/osnet_x0_25.onnx_b16_gpu0_fp16.engine
+labelfile-path=/opt/sentinel/deepstream/labels/coco_person_only.txt
+
+# FP16
+network-mode=2
+
+# SGIE: operate on crops from PGIE
+process-mode=2
+operate-on-gie-id=1
+operate-on-class-ids=0
+
+# Batch person crops within a frame
+batch-size=16
+
+# Input: RGB 256x128 person crop
+infer-dims=3;256;128
+net-scale-factor=0.0039215697906911373
+model-color-format=0
+
+# Expose raw 512-dim embedding tensor — parsed in pad probe
+output-tensor-meta=1
+classifier-async-mode=0
+
+# Re-ID model, not a detector
+network-type=100
+
+gie-unique-id=2

@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """Sentinel Orin — DeepStream detection + tracking pipeline.
 
-Pipeline:
+Pipeline (headless):
     uridecodebin -> nvstreammux -> nvinfer (YOLO26n PGIE FP16)
     -> nvtracker (NvDCF) -> fakesink
 
-    Pad probe on nvtracker src pad logs per-camera track IDs to stdout.
+Pipeline (display):
+    uridecodebin -> nvstreammux -> nvinfer (YOLO26n PGIE FP16)
+    -> nvtracker (NvDCF) -> nvdsosd -> nvegltransform -> nveglglessink
 
 Usage:
-    # Single stream:
+    # Headless (benchmark mode):
     python3 pipeline/sentinel_pipeline.py \
-        --videos /data/sentinel/videos/wildtrack_v1/cam01_1080p60.mp4
+        --videos /data/sentinel/videos/wildtrack_v1/cam01_1080p60.mp4 \
+                 /data/sentinel/videos/wildtrack_v1/cam03_1080p60.mp4 \
+                 /data/sentinel/videos/wildtrack_v1/cam05_1080p60.mp4
 
-    # Three streams:
-    python3 pipeline/sentinel_pipeline.py \
+    # Display mode (demo / visual verification):
+    python3 pipeline/sentinel_pipeline.py --display \
         --videos /data/sentinel/videos/wildtrack_v1/cam01_1080p60.mp4 \
                  /data/sentinel/videos/wildtrack_v1/cam03_1080p60.mp4 \
                  /data/sentinel/videos/wildtrack_v1/cam05_1080p60.mp4
@@ -50,6 +54,7 @@ DS_ROOT = Path("/opt/sentinel/deepstream")
 PGIE_CONFIG = DS_ROOT / "configs" / "yolo26n_pgie.txt"
 PARSER_LIB = DS_ROOT / "custom_parser" / "libnvdsinfer_custom_yolo26.so"
 TRACKER_CONFIG = DS_ROOT / "configs" / "tracker_nvdcf_perf.yml"
+SGIE_CONFIG = DS_ROOT / "configs" / "osnet_sgie.txt"
 
 # ---------------------------------------------------------------------------
 # State
@@ -88,11 +93,34 @@ def _on_tracker_src(pad, info, _user_data):
             # Log one tracked object per frame every 60 frames
             if _frame_count % 60 == 0 and n_obj == 1:
                 r = obj.rect_params
+                # Extract OSNet embedding norm (confirms SGIE is running)
+                emb_norm = 0.0
+                l_user = obj.obj_user_meta_list
+                while l_user:
+                    try:
+                        user_meta = pyds.NvDsUserMeta.cast(l_user.data)
+                        if (user_meta.base_meta.meta_type ==
+                                pyds.NvDsMetaType.NVDSINFER_TENSOR_OUTPUT_META):
+                            import ctypes
+
+                            import numpy as np
+                            # get_nvds_LayerInfo sets buffer=out_buf_ptrs_host[j]
+                            layer = pyds.get_nvds_LayerInfo(
+                                user_meta.user_meta_data, 0)
+                            ptr = pyds.get_ptr(layer.buffer)
+                            emb_arr = np.frombuffer(
+                                (ctypes.c_float * 512).from_address(ptr),
+                                dtype=np.float32).copy()
+                            emb_norm = float(np.linalg.norm(emb_arr))
+                        l_user = l_user.next
+                    except StopIteration:
+                        break
                 print(
                     f"[frame {_frame_count:>6}] "
                     f"cam={frame_meta.pad_index} "
                     f"track_id={obj.object_id} "
                     f"conf={obj.confidence:.2f} "
+                    f"emb_norm={emb_norm:.3f} "
                     f"box=({r.left:.0f},{r.top:.0f},{r.width:.0f},{r.height:.0f})"
                 )
 
@@ -129,15 +157,18 @@ def _make_element(factory: str, name: str) -> Gst.Element:
     return el
 
 
-def build_pipeline(video_paths: list[str]) -> tuple[Gst.Pipeline, GLib.MainLoop]:
+def build_pipeline(
+    video_paths: list[str], display: bool
+) -> tuple[Gst.Pipeline, GLib.MainLoop]:
     Gst.init(None)
 
     n_sources = len(video_paths)
-    print(f"[pipeline] sources={n_sources}")
+    mode = "display" if display else "headless"
+    print(f"[pipeline] sources={n_sources} mode={mode}")
     for p in video_paths:
         print(f"  {p}")
 
-    for path in [PGIE_CONFIG, PARSER_LIB, TRACKER_CONFIG]:
+    for path in [PGIE_CONFIG, PARSER_LIB, TRACKER_CONFIG, SGIE_CONFIG]:
         if not path.exists():
             sys.exit(f"Required file not found: {path}")
 
@@ -158,14 +189,20 @@ def build_pipeline(video_paths: list[str]) -> tuple[Gst.Pipeline, GLib.MainLoop]
         src = _make_element("uridecodebin", f"src-{i}")
         src.set_property("uri", uri)
 
-        def _on_pad_added(element, pad, idx=i):
+        converter = _make_element("nvvideoconvert", f"converter-{i}")
+        pipeline.add(converter)
+
+        def _on_pad_added(element, pad, idx=i, conv=converter):
             if pad.get_current_caps() is None:
                 return
             if "video" not in pad.get_current_caps().to_string():
                 return
-            sink_pad = streammux.get_request_pad(f"sink_{idx}")
+            conv_sink = conv.get_static_pad("sink")
+            if conv_sink and not conv_sink.is_linked():
+                pad.link(conv_sink)
+            sink_pad = streammux.request_pad_simple(f"sink_{idx}")
             if sink_pad and not sink_pad.is_linked():
-                pad.link(sink_pad)
+                conv.get_static_pad("src").link(sink_pad)
 
         src.connect("pad-added", _on_pad_added)
         pipeline.add(src)
@@ -177,7 +214,10 @@ def build_pipeline(video_paths: list[str]) -> tuple[Gst.Pipeline, GLib.MainLoop]
 
     # nvtracker NvDCF
     tracker = _make_element("nvtracker", "tracker")
-    tracker.set_property("ll-lib-file", "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so")
+    tracker.set_property(
+        "ll-lib-file",
+        "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so",
+    )
     tracker.set_property("ll-config-file", str(TRACKER_CONFIG))
     tracker.set_property("tracker-width", 640)
     tracker.set_property("tracker-height", 384)
@@ -185,21 +225,59 @@ def build_pipeline(video_paths: list[str]) -> tuple[Gst.Pipeline, GLib.MainLoop]
     tracker.set_property("display-tracking-id", 1)
     pipeline.add(tracker)
 
-    # fakesink
-    sink = _make_element("fakesink", "sink")
-    sink.set_property("sync", 0)
-    pipeline.add(sink)
+    # nvinfer SGIE — OSNet x0.25 appearance embeddings
+    sgie = _make_element("nvinfer", "sgie")
+    sgie.set_property("config-file-path", str(SGIE_CONFIG))
+    pipeline.add(sgie)
 
-    # link: streammux -> pgie -> tracker -> sink
-    streammux.link(pgie)
-    pgie.link(tracker)
-    tracker.link(sink)
+    # pad probe on sgie src (post-embedding extraction)
+    sgie_src = sgie.get_static_pad("src")
+    if not sgie_src:
+        sys.exit("Could not get sgie src pad")
+    sgie_src.add_probe(Gst.PadProbeType.BUFFER, _on_tracker_src, None)
 
-    # pad probe on tracker src (not pgie src — we want post-tracking metadata)
-    tracker_src = tracker.get_static_pad("src")
-    if not tracker_src:
-        sys.exit("Could not get tracker src pad")
-    tracker_src.add_probe(Gst.PadProbeType.BUFFER, _on_tracker_src, None)
+    if display:
+        # nvtiler — tiles N streams into one output for display
+        tiler = _make_element("nvmultistreamtiler", "tiler")
+        tiler.set_property("rows", 1)
+        tiler.set_property("columns", n_sources)
+        tiler.set_property("width", 1920)
+        tiler.set_property("height", 360)
+        pipeline.add(tiler)
+
+        # nvdsosd — draws bounding boxes + track IDs
+        osd = _make_element("nvdsosd", "osd")
+        osd.set_property("process-mode", 0)
+        osd.set_property("display-text", 1)
+        pipeline.add(osd)
+
+        # nvegltransform + nveglglessink — display on screen
+        transform = _make_element("nvegltransform", "transform")
+        pipeline.add(transform)
+
+        sink = _make_element("nveglglessink", "sink")
+        sink.set_property("sync", 0)
+        pipeline.add(sink)
+
+        # link: streammux -> pgie -> tracker -> tiler -> osd -> transform -> sink
+        streammux.link(pgie)
+        pgie.link(tracker)
+        tracker.link(sgie)
+        sgie.link(tiler)
+        tiler.link(osd)
+        osd.link(transform)
+        transform.link(sink)
+
+    else:
+        # Headless benchmark path
+        sink = _make_element("fakesink", "sink")
+        sink.set_property("sync", 0)
+        pipeline.add(sink)
+
+        streammux.link(pgie)
+        pgie.link(tracker)
+        tracker.link(sgie)
+        sgie.link(sink)
 
     # bus
     loop = GLib.MainLoop()
@@ -236,6 +314,11 @@ def main() -> None:
         required=True,
         help="Path(s) to input video file(s). One for smoke test, three for full pipeline.",
     )
+    ap.add_argument(
+        "--display",
+        action="store_true",
+        help="Enable visual output (nvdsosd + nveglglessink). Off by default for benchmarking.",
+    )
     args = ap.parse_args()
 
     for p in args.videos:
@@ -245,7 +328,7 @@ def main() -> None:
     if len(args.videos) > 3:
         sys.exit("Maximum 3 video sources (cam01, cam03, cam05).")
 
-    pipeline, loop = build_pipeline(args.videos)
+    pipeline, loop = build_pipeline(args.videos, display=args.display)
 
     global _t_start
     _t_start = time.time()
